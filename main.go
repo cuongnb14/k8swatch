@@ -10,20 +10,68 @@ import (
 	"os"
 	"time"
 
+	corev1 "k8s.io/api/core/v1" // Correct package for Pod and Container status
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
 
-// DiscordWebhookPayload defines the payload to be sent to Discord
-type DiscordWebhookPayload struct {
-	Content string `json:"content"`
+// DiscordEmbed defines the structure of an embed message for Discord
+type DiscordEmbed struct {
+	Title       string       `json:"title"`
+	Description string       `json:"description"`
+	Color       int          `json:"color"`
+	Fields      []EmbedField `json:"fields"`
+	Timestamp   string       `json:"timestamp"`
 }
 
-func sendDiscordNotification(webhookURL, message string) error {
-	payload := DiscordWebhookPayload{
-		Content: message,
+// EmbedField represents a field in the embed
+type EmbedField struct {
+	Name   string `json:"name"`
+	Value  string `json:"value"`
+	Inline bool   `json:"inline"`
+}
+
+// DiscordWebhookPayload defines the payload to be sent to Discord
+type DiscordWebhookPayload struct {
+	Embeds []DiscordEmbed `json:"embeds"`
+}
+
+// sendDiscordNotification sends an embedded message to Discord
+func sendDiscordNotification(webhookURL, podName, namespace string, restartCount int32, reason string) error {
+	embed := DiscordEmbed{
+		Title:       "Pod Restart Detected",
+		Description: fmt.Sprintf("Pod `%s` in namespace `%s` has restarted.", podName, namespace),
+		Color:       16711680, // Red color for alert
+		Fields: []EmbedField{
+			{
+				Name:   "Pod Name",
+				Value:  podName,
+				Inline: true,
+			},
+			{
+				Name:   "Namespace",
+				Value:  namespace,
+				Inline: true,
+			},
+			{
+				Name:   "Restart Count",
+				Value:  fmt.Sprintf("%d", restartCount),
+				Inline: true,
+			},
+			{
+				Name:   "Reason",
+				Value:  reason,
+				Inline: true,
+			},
+		},
+		Timestamp: time.Now().Format(time.RFC3339), // Current timestamp
 	}
+
+	payload := DiscordWebhookPayload{
+		Embeds: []DiscordEmbed{embed},
+	}
+
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload: %w", err)
@@ -42,6 +90,18 @@ func sendDiscordNotification(webhookURL, message string) error {
 	return nil
 }
 
+// getRestartReason checks the reason why a pod was restarted
+func getRestartReason(status *corev1.ContainerStatus) string { // Updated to corev1.ContainerStatus
+	// Check if the container has a LastState with a terminated reason
+	if status.LastTerminationState.Terminated != nil {
+		return status.LastTerminationState.Terminated.Reason
+	}
+
+	// If no reason is available, return "Unknown"
+	return "Unknown"
+}
+
+// checkPodRestarts checks for pod restarts and sends a notification with the reason
 func checkPodRestarts(clientset *kubernetes.Clientset, webhookURL string) {
 	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
@@ -51,8 +111,11 @@ func checkPodRestarts(clientset *kubernetes.Clientset, webhookURL string) {
 	for _, pod := range pods.Items {
 		for _, status := range pod.Status.ContainerStatuses {
 			if status.RestartCount > 0 {
-				message := fmt.Sprintf("Pod %s in namespace %s has restarted %d times.", pod.Name, pod.Namespace, status.RestartCount)
-				err := sendDiscordNotification(webhookURL, message)
+				// Get the reason for the last restart
+				reason := getRestartReason(&status)
+
+				// Send notification with pod details and reason
+				err := sendDiscordNotification(webhookURL, pod.Name, pod.Namespace, status.RestartCount, reason)
 				if err != nil {
 					log.Printf("Failed to send Discord notification: %v", err)
 				} else {
