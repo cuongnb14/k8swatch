@@ -1,4 +1,4 @@
-VERSION=0.0.5
+VERSION=0.0.6
 
 build:
 	docker build -t cuongnb14/k8swatch:$(VERSION) .

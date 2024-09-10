@@ -1,13 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
+	"github/cuongnb14/k8swatch/notification"
 	"log"
-	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,73 +16,8 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// DiscordEmbed defines the structure of an embed message for Discord
-type DiscordEmbed struct {
-	Title       string       `json:"title"`
-	Description string       `json:"description"`
-	Color       int          `json:"color"`
-	Fields      []EmbedField `json:"fields"`
-	Timestamp   string       `json:"timestamp"`
-}
-
-// EmbedField represents a field in the embed
-type EmbedField struct {
-	Name   string `json:"name"`
-	Value  string `json:"value"`
-	Inline bool   `json:"inline"`
-}
-
-// DiscordWebhookPayload defines the payload to be sent to Discord
-type DiscordWebhookPayload struct {
-	Embeds []DiscordEmbed `json:"embeds"`
-}
-
-// sendDiscordNotification sends an embedded message to Discord
-func sendDiscordNotification(webhookURL, podName, namespace string, restartCount int32, reason string) error {
-	embed := DiscordEmbed{
-		Title:       fmt.Sprintf("Pod Restarted `%s`", podName),
-		Description: "",
-		Color:       16711680, // Red color for alert
-		Fields: []EmbedField{
-			{
-				Name:   "Namespace",
-				Value:  namespace,
-				Inline: true,
-			},
-			{
-				Name:   "Restart Count",
-				Value:  fmt.Sprintf("%d", restartCount),
-				Inline: true,
-			},
-			{
-				Name:   "Reason",
-				Value:  reason,
-				Inline: true,
-			},
-		},
-		Timestamp: time.Now().Format(time.RFC3339), // Current timestamp
-	}
-
-	payload := DiscordWebhookPayload{
-		Embeds: []DiscordEmbed{embed},
-	}
-
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
-	}
-
-	resp, err := http.Post(webhookURL, "application/json", bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		return fmt.Errorf("failed to send notification: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("received non-OK response from Discord: %s", resp.Status)
-	}
-
-	return nil
+type Notifier interface {
+	SendNotification(podName, namespace string, restartCount int32, reason string) error
 }
 
 // getRestartReason checks the reason why a pod was restarted
@@ -99,7 +33,7 @@ var podRestartCounts = make(map[string]int32)
 var mu sync.Mutex // Mutex for thread safety
 
 // checkPodRestarts checks for pod restarts and sends a notification only if restart count increases
-func checkPodRestarts(clientset *kubernetes.Clientset, webhookURL string) {
+func checkPodRestarts(clientset *kubernetes.Clientset, notifiers []Notifier) {
 	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		log.Fatalf("Error fetching pods: %v", err)
@@ -120,11 +54,11 @@ func checkPodRestarts(clientset *kubernetes.Clientset, webhookURL string) {
 			if status.RestartCount > previousRestartCount {
 				reason := getRestartReason(&status)
 
-				err := sendDiscordNotification(webhookURL, pod.Name, pod.Namespace, status.RestartCount, reason)
-				if err != nil {
-					log.Printf("Failed to send Discord notification: %v", err)
-				} else {
-					log.Printf("Sent notification for pod %s", pod.Name)
+				for _, notifier := range notifiers {
+					err := notifier.SendNotification(pod.Name, pod.Namespace, status.RestartCount, reason)
+					if err != nil {
+						log.Printf("Failed to send notification: %v", err)
+					}
 				}
 
 				// Update the restart count in the map
@@ -137,6 +71,16 @@ func checkPodRestarts(clientset *kubernetes.Clientset, webhookURL string) {
 func main() {
 
 	discordWebhookURL := os.Getenv("DISCORD_WEBHOOK_URL")
+	intervalStr := os.Getenv("CHECK_INTERVAL")
+	iter := 60
+	if intervalStr != "" {
+		var err error
+		iter, err = strconv.Atoi(intervalStr)
+		if err != nil {
+			log.Fatal("Error:", err)
+		}
+	}
+
 	if discordWebhookURL == "" {
 		log.Fatalf("Discord webhook URL not provided")
 	}
@@ -152,9 +96,14 @@ func main() {
 		log.Fatalf("Error creating Kubernetes client: %v", err)
 	}
 
+	notifiers := []Notifier{
+		&notification.DiscordNotifier{WebhookURL: discordWebhookURL},
+		// Add Slack, Telegram notifier instances as needed
+	}
+
 	// Check pod restarts every minute
 	for {
-		checkPodRestarts(clientset, discordWebhookURL)
-		time.Sleep(1 * time.Minute)
+		checkPodRestarts(clientset, notifiers)
+		time.Sleep(time.Duration(iter) * time.Second)
 	}
 }
