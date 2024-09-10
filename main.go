@@ -8,9 +8,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
-	corev1 "k8s.io/api/core/v1" // Correct package for Pod and Container status
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -40,15 +41,10 @@ type DiscordWebhookPayload struct {
 // sendDiscordNotification sends an embedded message to Discord
 func sendDiscordNotification(webhookURL, podName, namespace string, restartCount int32, reason string) error {
 	embed := DiscordEmbed{
-		Title:       "Pod Restart Detected",
-		Description: fmt.Sprintf("Pod `%s` in namespace `%s` has restarted.", podName, namespace),
+		Title:       fmt.Sprintf("Pod Restarted `%s`", podName),
+		Description: "",
 		Color:       16711680, // Red color for alert
 		Fields: []EmbedField{
-			{
-				Name:   "Pod Name",
-				Value:  podName,
-				Inline: true,
-			},
 			{
 				Name:   "Namespace",
 				Value:  namespace,
@@ -91,36 +87,48 @@ func sendDiscordNotification(webhookURL, podName, namespace string, restartCount
 }
 
 // getRestartReason checks the reason why a pod was restarted
-func getRestartReason(status *corev1.ContainerStatus) string { // Updated to corev1.ContainerStatus
-	// Check if the container has a LastState with a terminated reason
+func getRestartReason(status *corev1.ContainerStatus) string {
 	if status.LastTerminationState.Terminated != nil {
 		return status.LastTerminationState.Terminated.Reason
 	}
-
-	// If no reason is available, return "Unknown"
 	return "Unknown"
 }
 
-// checkPodRestarts checks for pod restarts and sends a notification with the reason
+// State to track pod restart counts
+var podRestartCounts = make(map[string]int32)
+var mu sync.Mutex // Mutex for thread safety
+
+// checkPodRestarts checks for pod restarts and sends a notification only if restart count increases
 func checkPodRestarts(clientset *kubernetes.Clientset, webhookURL string) {
 	pods, err := clientset.CoreV1().Pods("").List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
 		log.Fatalf("Error fetching pods: %v", err)
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
+
 	for _, pod := range pods.Items {
 		for _, status := range pod.Status.ContainerStatuses {
-			if status.RestartCount > 0 {
-				// Get the reason for the last restart
+			podKey := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+			previousRestartCount, exists := podRestartCounts[podKey]
+
+			if !exists {
+				podRestartCounts[podKey] = 0
+
+			}
+			if status.RestartCount > previousRestartCount {
 				reason := getRestartReason(&status)
 
-				// Send notification with pod details and reason
 				err := sendDiscordNotification(webhookURL, pod.Name, pod.Namespace, status.RestartCount, reason)
 				if err != nil {
 					log.Printf("Failed to send Discord notification: %v", err)
 				} else {
 					log.Printf("Sent notification for pod %s", pod.Name)
 				}
+
+				// Update the restart count in the map
+				podRestartCounts[podKey] = status.RestartCount
 			}
 		}
 	}

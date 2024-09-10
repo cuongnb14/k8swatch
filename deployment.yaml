@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8swatch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8swatch
+  template:
+    metadata:
+      labels:
+        app: k8swatch
+    spec:
+      serviceAccountName: k8swatch-sa
+      containers:
+      - name: k8swatch
+        image: cuongnb14/k8swatch:0.0.5
+        env:
+        - name: DISCORD_WEBHOOK_URL
+          value: "CHANGEME"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8swatch-sa
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8swatch-role
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8swatch-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: k8swatch-role
+subjects:
+- kind: ServiceAccount
+  name: k8swatch-sa
+  namespace: "default"
