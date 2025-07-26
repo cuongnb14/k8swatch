@@ -71,6 +71,7 @@ func checkPodRestarts(clientset *kubernetes.Clientset, notifiers []Notifier) {
 func main() {
 
 	discordWebhookURL := os.Getenv("DISCORD_WEBHOOK_URL")
+	slackWebhookURL := os.Getenv("SLACK_WEBHOOK_URL")
 	intervalStr := os.Getenv("CHECK_INTERVAL")
 	iter := 60
 	if intervalStr != "" {
@@ -81,8 +82,8 @@ func main() {
 		}
 	}
 
-	if discordWebhookURL == "" {
-		log.Fatalf("Discord webhook URL not provided")
+	if discordWebhookURL == "" && slackWebhookURL == "" {
+		log.Fatalf("At least one webhook URL (Discord or Slack) must be provided")
 	}
 
 	// Create Kubernetes client
@@ -96,9 +97,14 @@ func main() {
 		log.Fatalf("Error creating Kubernetes client: %v", err)
 	}
 
-	notifiers := []Notifier{
-		&notification.DiscordNotifier{WebhookURL: discordWebhookURL},
-		// Add Slack, Telegram notifier instances as needed
+	var notifiers []Notifier
+	
+	if discordWebhookURL != "" {
+		notifiers = append(notifiers, &notification.DiscordNotifier{WebhookURL: discordWebhookURL})
+	}
+	
+	if slackWebhookURL != "" {
+		notifiers = append(notifiers, &notification.SlackNotifier{WebhookURL: slackWebhookURL})
 	}
 
 	// Check pod restarts every minute

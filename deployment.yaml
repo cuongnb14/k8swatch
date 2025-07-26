@@ -19,6 +19,8 @@ spec:
         env:
         - name: DISCORD_WEBHOOK_URL
           value: "CHANGEME"
+        - name: SLACK_WEBHOOK_URL
+          value: "CHANGEME"
 ---
 apiVersion: v1
 kind: ServiceAccount
